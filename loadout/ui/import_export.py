@@ -98,40 +98,68 @@ def stage_url(data, g):
         st.rerun()
 
 
+PAGE = 200
+
+
 def stage_select(data, g):
     repo = Path(g["repo"])
-    tree = portability.list_tree(repo)
+    if "children" not in g:
+        tree = portability.list_tree(repo)
+        g.update(children=portability.tree_children(tree), truncated=len(tree) >= 20000)
+    children = g["children"]
+    marked = g.setdefault("marked", set())
+    opened = g.setdefault("open", set())
     st.write(f"**{g['url']}**")
-    st.caption("Tick files or folders to keep. A ticked folder is imported as a single asset (e.g. a whole skill).")
-    if not tree:
+    if g["truncated"]:
+        st.warning("This repository is very large: the listing was truncated at 20,000 entries, so some items are not shown.")
+    st.caption("Tick a file or folder to import it; a ticked folder brings everything below it (imported as one asset, "
+               "e.g. a whole skill). Open a folder with ▸ to tick only some of its contents — the folder then shows ◧.")
+    if not children:
         common.empty_state("The repository is empty", icon="📭")
+    q = st.text_input("Filter names", key="git_filter", placeholder="Filter items inside opened folders…").strip().lower()
     done = {a["source"]["path"] for _, a in updates.tracked(data) if a["source"]["url"] == g["url"]}
     if g.get("pinned"):
         st.caption("This is a tag or commit: imported assets will be marked as pinned and not checked for updates.")
-    picked = []
-    # Streamlit forbids nested expanders, so each top-level folder gets one expander with an indented list.
-    tops = [t for t in tree if t["depth"] == 0]
-    for top in tops:
-        group = [t for t in tree if t["rel"] == top["rel"] or t["rel"].startswith(top["rel"] + "/")]
-        if top["is_dir"]:
-            with st.expander(f"📁 {top['name']}  ({len(group) - 1} items)"):
-                for t in group:
-                    if _row(t, done):
-                        picked.append(t["rel"])
-        else:
-            if _row(top, done):
-                picked.append(top["rel"])
-    sel = portability.prune_selection(picked)
+    _render_level(g, "", 0, q, done)
+    sel = portability.prune_selection(sorted(marked))
     st.info(f"{len(sel)} item(s) selected")
     if st.button("Continue", icon="➡️", type="primary", disabled=not sel):
         g.update(stage="classify", queue=sel, idx=0, results=[])
         st.rerun()
 
 
-def _row(t: dict, done: set) -> bool:
-    pad, col = st.columns([t["depth"] * 0.08 + 0.001 if t["depth"] else 0.001, 1])
-    label = ("📁 " if t["is_dir"] else "📄 ") + t["name"] + ("  ✅ imported" if t["rel"] in done else "")
-    return col.checkbox(label, key=f"gsel_{t['rel']}")
+def _render_level(g, parent: str, depth: int, q: str, done: set) -> None:
+    items = g["children"].get(parent, [])
+    if q:
+        items = [t for t in items if q in t["name"].lower()]
+    limit = g.setdefault("limit", {}).get(parent, PAGE)
+    for t in items[:limit]:
+        _row(g, t, depth, done)
+        if t["is_dir"] and t["rel"] in g["open"]:
+            _render_level(g, t["rel"], depth + 1, q, done)
+    if len(items) > limit:
+        pad, col = st.columns([depth * 0.05 + 0.001, 1])
+        if col.button(f"Show more ({len(items) - limit} hidden)", key=f"more_{parent}"):
+            g["limit"][parent] = limit + PAGE
+            st.rerun()
+
+
+def _flip(g, rel: str) -> None:
+    g["marked"] = portability.toggle_mark(rel, g["marked"], g["children"])
+
+
+def _row(g, t: dict, depth: int, done: set) -> None:
+    rel = t["rel"]
+    state = portability.node_state(rel, g["marked"])
+    pad, arrow, col = st.columns([depth * 0.05 + 0.001, 0.06, 1], vertical_alignment="center")
+    if t["is_dir"]:
+        is_open = rel in g["open"]
+        if arrow.button("▾" if is_open else "▸", key=f"gopen_{rel}", type="tertiary"):
+            g["open"].symmetric_difference_update({rel})
+            st.rerun()
+    label = ("◧ " if state == "partial" else "") + ("📁 " if t["is_dir"] else "📄 ") + t["name"]         + ("  ✅ imported" if rel in done else "")
+    # The state is part of the key so implicit changes (a parent being ticked) refresh the checkbox.
+    col.checkbox(label, value=state == "marked", key=f"gsel_{rel}_{state}", on_change=_flip, args=(g, rel))
 
 
 def stage_classify(data, g):

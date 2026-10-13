@@ -576,3 +576,20 @@ def test_instructions_file_create_count_and_seed_once(tmp_path):
     sync.attach(proj, d, "rules", rl)        # the managed block is not counted as the user's own text
     assert sync.root_info(proj)["chars"] == info["chars"] and "LOADOUT:START" in rf.read_text()
     assert sync.discover(proj, d) == []
+
+
+def test_tree_selection_states():
+    rels = ["p", "p/a", "p/b", "p/b/x.md", "p/c.md", "q"]
+    tree = [{"rel": r, "name": r.rsplit("/", 1)[-1], "is_dir": r in ("p", "p/b"), "depth": r.count("/")} for r in rels]
+    ch = portability.tree_children(tree)
+    m = portability.toggle_mark("p", set(), ch)
+    assert m == {"p"} and portability.node_state("p/b/x.md", m) == "marked"
+    m = portability.toggle_mark("p/b/x.md", m, ch)  # unmark one nested file -> p becomes partial
+    assert portability.node_state("p", m) == "partial" and portability.node_state("p/b", m) == "none"
+    assert portability.node_state("p/b/x.md", m) == "none"
+    assert portability.prune_selection(sorted(m)) == ["p/a", "p/c.md"]
+    m = portability.toggle_mark("p", m, ch)  # completing a partial folder marks it whole
+    assert m == {"p"}
+    assert portability.node_state("q", m) == "none"
+    only = portability.toggle_mark("p/c.md", set(), ch)
+    assert portability.node_state("p", only) == "partial"

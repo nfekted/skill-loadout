@@ -233,7 +233,7 @@ def wipe(path: Path | str | None) -> None:
         shutil.rmtree(p, ignore_errors=True)
 
 
-def list_tree(repo: Path, max_entries: int = 1500) -> list[dict]:
+def list_tree(repo: Path, max_entries: int = 20000) -> list[dict]:
     """Flat, depth-annotated listing (dirs first) of a repo, skipping VCS/vendor folders."""
     out: list[dict] = []
 
@@ -248,6 +248,52 @@ def list_tree(repo: Path, max_entries: int = 1500) -> list[dict]:
 
     walk(repo, 0)
     return out
+
+
+def tree_children(tree: list[dict]) -> dict[str, list[dict]]:
+    """Group a flat `list_tree` result by parent folder (root is the empty string)."""
+    out: dict[str, list[dict]] = {}
+    for t in tree:
+        out.setdefault(t["rel"].rpartition("/")[0], []).append(t)
+    return out
+
+
+def _marked_ancestor(rel: str, marked: set[str]) -> str | None:
+    """The nearest marked path equal to `rel` or containing it."""
+    while True:
+        if rel in marked:
+            return rel
+        if "/" not in rel:
+            return None
+        rel = rel.rpartition("/")[0]
+
+
+def node_state(rel: str, marked: set[str]) -> str:
+    """'marked' (itself or an ancestor is marked), 'partial' (only some descendants are) or 'none'."""
+    if _marked_ancestor(rel, marked) is not None:
+        return "marked"
+    prefix = rel + "/"
+    return "partial" if any(m.startswith(prefix) for m in marked) else "none"
+
+
+def toggle_mark(rel: str, marked: set[str], children: dict[str, list[dict]]) -> set[str]:
+    """New marked set after clicking `rel`.
+
+    Marking a node (or completing a partial folder) marks it whole and drops redundant descendants.
+    Unmarking a node that is only marked through an ancestor turns that ancestor into a partial folder
+    by marking every other branch down to it.
+    """
+    anc = _marked_ancestor(rel, marked)
+    if anc is None:
+        prefix = rel + "/"
+        return {m for m in marked if not m.startswith(prefix)} | {rel}
+    new = marked - {anc}
+    cur = anc
+    while cur != rel:
+        nxt = cur + "/" + rel[len(cur) + 1:].split("/")[0]
+        new |= {c["rel"] for c in children.get(cur, []) if c["rel"] != nxt}
+        cur = nxt
+    return new
 
 
 def prune_selection(selected: list[str]) -> list[str]:
